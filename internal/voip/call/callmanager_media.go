@@ -76,31 +76,60 @@ func (m *CallManager) sendOpusFrameLocked(opus []byte) {
 	m.relay.Broadcast(srtp)
 }
 
+// SetExternalKeepalive switches the silence-keepalive mechanism between the
+// default per-call goroutine+ticker (false, the byte-identical fallback) and
+// an external driver that ticks every call itself via TickSilenceKeepalive
+// (true). Call it right after NewCallManager, before any signaling — once
+// startSilenceKeepaliveLocked has run (relay connected → Active), flipping
+// the flag no longer stops an already-started internal ticker.
+func (m *CallManager) SetExternalKeepalive(on bool) {
+	m.mu.Lock()
+	m.externalKeepalive = on
+	m.mu.Unlock()
+}
+
+// TickSilenceKeepalive is the extracted body of the per-call keepalive
+// ticker's tick, exposed so an external driver can call it on its own
+// schedule instead of each call running its own goroutine+ticker. Returns
+// true only if a silence frame was actually sent (session ready and idle
+// long enough). Safe to call concurrently with cleanupMedia: cleanupMedia
+// nils m.codec under m.mu before Close(); a concurrent tick either observes
+// codec != nil (Close only runs after this tick releases the lock) or
+// observes nil and returns false — no extra synchronization needed.
+func (m *CallManager) TickSilenceKeepalive(now time.Time) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ready := m.codec != nil && m.rtpSession != nil && m.srtpSession != nil && m.relay.HasConnection()
+	idle := now.Sub(m.lastCaptureAt) > 120*time.Millisecond
+	if !ready || !idle {
+		return false
+	}
+	if m.silenceBuf == nil {
+		m.silenceBuf = make([]float32, m.codec.FrameSize())
+	}
+	opus, err := m.codec.Encode(m.silenceBuf)
+	if err != nil {
+		return false
+	}
+	m.sendOpusFrameLocked(opus)
+	return true
+}
+
 func (m *CallManager) startSilenceKeepaliveLocked() {
-	if m.keepaliveStop != nil || m.codec == nil {
+	if m.externalKeepalive || m.keepaliveStop != nil || m.codec == nil {
 		return
 	}
 	stop := make(chan struct{})
 	m.keepaliveStop = stop
-	frameSize := m.codec.FrameSize()
 	go func() {
 		ticker := time.NewTicker(60 * time.Millisecond)
 		defer ticker.Stop()
-		silence := make([]float32, frameSize)
 		for {
 			select {
 			case <-stop:
 				return
-			case <-ticker.C:
-				m.mu.Lock()
-				ready := m.codec != nil && m.rtpSession != nil && m.srtpSession != nil && m.relay.HasConnection()
-				idle := time.Since(m.lastCaptureAt) > 120*time.Millisecond
-				if ready && idle {
-					if opus, err := m.codec.Encode(silence); err == nil {
-						m.sendOpusFrameLocked(opus)
-					}
-				}
-				m.mu.Unlock()
+			case now := <-ticker.C:
+				m.TickSilenceKeepalive(now)
 			}
 		}
 	}()

@@ -91,6 +91,7 @@ func (m *CallManager) cleanupMedia() {
 	m.actualPeerSet = false
 	m.encodeBuf = nil
 	m.encodeBufPos = 0
+	m.silenceBuf = nil
 	m.mu.Unlock()
 
 	m.relay.Cleanup()

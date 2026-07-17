@@ -42,6 +42,15 @@ type CallManager struct {
 	lastCaptureAt time.Time
 	keepaliveStop chan struct{}
 
+	// externalKeepalive, when true, tells startSilenceKeepaliveLocked to skip
+	// spawning its own per-call goroutine+ticker: an external driver is
+	// expected to call TickSilenceKeepalive itself instead. Must be set via
+	// SetExternalKeepalive right after NewCallManager, before any signaling.
+	externalKeepalive bool
+	// silenceBuf is the lazily-allocated silence frame reused by
+	// TickSilenceKeepalive across ticks (per-call, sized to codec.FrameSize()).
+	silenceBuf []float32
+
 	OnStateChange func(*CallInfo)
 	OnIncoming    func(*CallInfo)
 	OnEnded       func(*CallInfo)
