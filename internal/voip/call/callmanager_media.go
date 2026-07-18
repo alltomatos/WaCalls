@@ -128,8 +128,8 @@ func (m *CallManager) startSilenceKeepaliveLocked() {
 			select {
 			case <-stop:
 				return
-			case now := <-ticker.C:
-				m.TickSilenceKeepalive(now)
+			case <-ticker.C:
+				m.TickSilenceKeepalive(time.Now())
 			}
 		}
 	}()
